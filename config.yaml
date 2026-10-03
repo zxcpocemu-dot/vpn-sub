@@ -1,0 +1,24 @@
+input: servers.txt
+output_dir: out
+
+check:
+  timeout: 3.0
+  concurrency: 50
+  attempts: 3
+  min_alive_ratio: 0.66
+  require_tls: true
+  max_ping: 200
+
+geo:
+  enabled: true
+  mode: whitelist
+  countries: [DE, NL, FI, SE, FR, GB, PL, CZ, AT, CH, RO, LT, LV, EE, IT, ES, PT, BE, DK, NO, IE]
+
+brand:
+  name: "vurdolak_67"
+  flag: true
+
+output:
+  base64: true
+  plain: false
+  clash: false
