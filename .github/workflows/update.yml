@@ -1,39 +1,10 @@
-name: Update VPN Subscription
+name: Disabled
 
 on:
-  schedule:
-    # Запуск в 15 минут каждого часа (UTC)
-    # Не в 00, потому что GitHub сильно задерживает запуски в начале часа
-    - cron: "15 * * * *"
   workflow_dispatch:
 
 jobs:
-  filter:
+  noop:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install deps
-        run: pip install aiohttp pyyaml
-
-      - name: Run filter
-        run: python filter.py
-
-      - name: Commit updated subscription
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          mkdir -p out
-          git add out/ || true
-          git diff --staged --quiet || git commit -m "Auto-update subscription [skip ci]"
-          git pull --rebase origin main
-          git push
+      - run: echo "Disabled. Local filter handles everything."
