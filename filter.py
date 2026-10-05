@@ -4,6 +4,8 @@ import ssl
 import time
 import socket
 import ipaddress
+import random
+import string
 from pathlib import Path
 from urllib.parse import parse_qs, unquote
 import yaml
@@ -34,6 +36,17 @@ RU_SNI = (
     "avito", "kinopoisk", "rutube", "dzen", "ria.ru",
     "rt.com", "lenta.ru", "kp.ru", "rambler", "1c.ru",
 )
+
+# ============================================================
+# ГЕНЕРАТОР СЛУЧАЙНЫХ ИМЁН
+# ============================================================
+def random_node_name():
+    """Генерирует случайное имя, похожее на домен."""
+    prefixes = ["node", "srv", "proxy", "edge", "cdn", "fast", "cloud", "relay", "vpn", "tunnel"]
+    suffixes = ["net", "com", "org", "io", "xyz", "site", "online", "tech", "space", "link"]
+    letters = ''.join(random.choices(string.ascii_lowercase, k=6))
+    digits = ''.join(random.choices(string.digits, k=2))
+    return f"{random.choice(prefixes)}-{letters}{digits}.{random.choice(suffixes)}"
 
 
 async def gather_servers(session):
@@ -122,14 +135,11 @@ async def probe(cfg):
     sni = cfg["params"].get("sni", "") or cfg["params"].get("host", "") or ""
 
     # === ФИЛЬТР SNI ===
-    # Если SNI указан и он НЕ российский — выбрасываем
-    # (значит, сервер маскируется под заблокированный домен)
     if sni:
         sni_low = sni.lower()
         is_ru = any(kw in sni_low for kw in RU_SNI)
         if not is_ru:
             return False, 0, False
-    # Если SNI пустой — тоже выбрасываем
     else:
         return False, 0, False
 
@@ -177,7 +187,6 @@ async def main():
         fresh = await gather_servers(session)
         print(f"[+] Из источника: {len(fresh)} ссылок")
 
-        # Плюс локальный servers.txt (если есть)
         local = []
         if Path(CFG["input"]).exists():
             local = [
@@ -192,7 +201,7 @@ async def main():
         configs = [parse_vless(l) for l in all_links]
         configs = [c for c in configs if c]
 
-        # === Предварительный фильтр по SNI (быстрый, без сети) ===
+        # Предварительный фильтр по SNI
         before = len(configs)
         configs = [
             c for c in configs
@@ -214,7 +223,6 @@ async def main():
             )
             return
 
-        # Дедупликация по host:port
         seen = set()
         unique = []
         for c in configs:
@@ -276,8 +284,14 @@ async def main():
     for r in good:
         cfg = r["cfg"]
         flag = FLAGS.get(r["country"] or "", "")
-        sni = cfg["params"].get("sni", "") or cfg["params"].get("host", "")
-        new_name = f"{flag} {r['country'] or '??'} | {r['ping']}ms | {sni} | @{brand}"
+        # === РАНДОМИЗАЦИЯ ИМЕНИ ===
+        # Вариант 1: полностью случайное имя (без страны и бренда)
+        # new_name = random_node_name()
+        # Вариант 2: случайное имя + флаг страны (без бренда)
+        new_name = f"{flag} {random_node_name()}"
+        # Вариант 3: случайное имя + страна + бренд (если хочешь оставить бренд)
+        # new_name = f"{flag} {r['country'] or '??'} | {random_node_name()} | @{brand}"
+
         params = "&".join(f"{k}={v}" for k, v in cfg["params"].items())
         new_link = f"vless://{cfg['uuid']}@{cfg['host']}:{cfg['port']}?{params}#{new_name}"
         final_links.append(new_link)
