@@ -27,6 +27,14 @@ FLAGS = {
     "DK":"🇩🇰","NO":"🇳🇴","IE":"🇮🇪",
 }
 
+# Российские SNI, которые РКН НЕ блокирует
+RU_SNI = (
+    "yandex", "ya.ru", "mail.ru", "vk.com", "ok.ru",
+    "sber", "gosuslugi", "2ip.ru", "wildberries", "ozon",
+    "avito", "kinopoisk", "rutube", "dzen", "ria.ru",
+    "rt.com", "lenta.ru", "kp.ru", "rambler", "1c.ru",
+)
+
 
 async def gather_servers(session):
     """Скачивает VLESS-ссылки из источника."""
@@ -111,13 +119,27 @@ async def tls_ok(host, port, timeout, sni=None):
 async def probe(cfg):
     host, port = cfg["host"], cfg["port"]
     timeout = CFG["check"]["timeout"]
+    sni = cfg["params"].get("sni", "") or cfg["params"].get("host", "") or ""
+
+    # === ФИЛЬТР SNI ===
+    # Если SNI указан и он НЕ российский — выбрасываем
+    # (значит, сервер маскируется под заблокированный домен)
+    if sni:
+        sni_low = sni.lower()
+        is_ru = any(kw in sni_low for kw in RU_SNI)
+        if not is_ru:
+            return False, 0, False
+    # Если SNI пустой — тоже выбрасываем
+    else:
+        return False, 0, False
+
     t0 = time.perf_counter()
     if not await tcp_ok(host, port, timeout):
         return False, 0, False
     ping = int((time.perf_counter() - t0) * 1000)
+
     security = cfg["params"].get("security", "")
     if security in ("tls", "reality") or CFG["check"]["require_tls"]:
-        sni = cfg["params"].get("sni") or cfg["params"].get("host") or host
         if not await tls_ok(host, port, timeout, sni):
             return False, 0, False
         return True, ping, True
@@ -170,6 +192,29 @@ async def main():
         configs = [parse_vless(l) for l in all_links]
         configs = [c for c in configs if c]
 
+        # === Предварительный фильтр по SNI (быстрый, без сети) ===
+        before = len(configs)
+        configs = [
+            c for c in configs
+            if (c["params"].get("sni") or c["params"].get("host") or "")
+            and any(
+                kw in (c["params"].get("sni", "") or c["params"].get("host", "")).lower()
+                for kw in RU_SNI
+            )
+        ]
+        print(f"[+] После фильтра SNI: {len(configs)} из {before}")
+
+        if not configs:
+            print("[!] Нет серверов с российским SNI. Проверь источник.")
+            (OUT / "sub_base64.txt").write_text("", encoding="utf-8")
+            (OUT / "sub_plain.txt").write_text("", encoding="utf-8")
+            (OUT / "report.txt").write_text(
+                f"Всего: {before} | Живых: 0\nНет серверов с российским SNI.\n",
+                encoding="utf-8",
+            )
+            return
+
+        # Дедупликация по host:port
         seen = set()
         unique = []
         for c in configs:
@@ -231,7 +276,8 @@ async def main():
     for r in good:
         cfg = r["cfg"]
         flag = FLAGS.get(r["country"] or "", "")
-        new_name = f"{flag} {r['country'] or '??'} | {r['ping']}ms | @{brand}"
+        sni = cfg["params"].get("sni", "") or cfg["params"].get("host", "")
+        new_name = f"{flag} {r['country'] or '??'} | {r['ping']}ms | {sni} | @{brand}"
         params = "&".join(f"{k}={v}" for k, v in cfg["params"].items())
         new_link = f"vless://{cfg['uuid']}@{cfg['host']}:{cfg['port']}?{params}#{new_name}"
         final_links.append(new_link)
@@ -244,14 +290,15 @@ async def main():
     lines = [
         f"Всего: {len(unique)} | Живых: {len(good)} | Время: {elapsed:.1f}с",
         "",
-        f"{'СЕРВЕР':<35} {'ГЕО':<5} {'ПИНГ':<6} {'RATIO'}",
-        "-" * 60,
+        f"{'СЕРВЕР':<35} {'ГЕО':<5} {'ПИНГ':<6} {'RATIO':<6} {'SNI'}",
+        "-" * 80,
     ]
     for r in good:
         cfg = r["cfg"]
+        sni = cfg["params"].get("sni", "") or cfg["params"].get("host", "")
         lines.append(
             f"{cfg['host']+':'+str(cfg['port']):<35} "
-            f"{r['country'] or '??':<5} {r['ping']:<6} {r['alive_ratio']:.2f}"
+            f"{r['country'] or '??':<5} {r['ping']:<6} {r['alive_ratio']:.2f}   {sni}"
         )
     (OUT / "report.txt").write_text("\n".join(lines), encoding="utf-8")
 
