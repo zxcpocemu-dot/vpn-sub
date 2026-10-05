@@ -1,12 +1,31 @@
-import asyncio, base64, ssl, time, json, re, socket, ipaddress
+import asyncio
+import base64
+import ssl
+import time
+import socket
+import ipaddress
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs, unquote
+from urllib.parse import parse_qs, unquote
 import yaml
 import aiohttp
 
 CFG = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
 OUT = Path(CFG["output_dir"])
 OUT.mkdir(exist_ok=True)
+
+# ============================================================
+# ИСТОЧНИКИ — публичные репозитории, обновляются автоматически
+# ============================================================
+SOURCES = [
+    "https://raw.githubusercontent.com/MatinGhanbari/v2ray-configs/main/subscriptions/filtered/subs/vless.txt",
+    "https://raw.githubusercontent.com/kort0881/vpn-vless-configs-russia/main/githubmirror/clean/vless.txt",
+    "https://raw.githubusercontent.com/srgvsky/goida/main/sub/vless.txt",
+    "https://raw.githubusercontent.com/mohammadaz2/v2rayConfigsForYou/main/sub/vless.txt",
+    "https://raw.githubusercontent.com/hamedcode/port-based-v2ray-configs/main/sub/vless.txt",
+    "https://raw.githubusercontent.com/histeenn/VLESS-PO-GRIBI/main/deploy/subscriptions/1.txt",
+    "https://raw.githubusercontent.com/histeenn/VLESS-PO-GRIBI/main/deploy/subscriptions/2.txt",
+    "https://raw.githubusercontent.com/histeenn/VLESS-PO-GRIBI/main/deploy/subscriptions/3.txt",
+]
 
 FLAGS = {
     "DE":"🇩🇪","NL":"🇳🇱","FI":"🇫🇮","SE":"🇸🇪","FR":"🇫🇷","GB":"🇬🇧",
@@ -15,6 +34,27 @@ FLAGS = {
     "DK":"🇩🇰","NO":"🇳🇴","IE":"🇮🇪",
 }
 
+
+# ---------- Скачивание из источников ----------
+async def gather_servers(session):
+    all_links = set()
+    for url in SOURCES:
+        try:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as r:
+                text = await r.text()
+                count = 0
+                for line in text.splitlines():
+                    line = line.strip()
+                    if line.startswith("vless://"):
+                        all_links.add(line)
+                        count += 1
+                print(f"[+] {url.split('/')[4]}: +{count}")
+        except Exception as e:
+            print(f"[!] Не удалось скачать {url}: {e}")
+    return list(all_links)
+
+
+# ---------- Парсинг VLESS ----------
 def parse_vless(link):
     try:
         link = link.strip()
@@ -27,27 +67,24 @@ def parse_vless(link):
         body = link.replace("vless://", "")
         uuid, rest = body.split("@", 1)
         hostport, query = rest.split("?", 1) if "?" in rest else (rest, "")
-        # Убираем возможный слэш после порта: host:443/  ->  host:443
-        hostport = hostport.rstrip("/")
         if hostport.startswith("["):
             host, port = hostport.rsplit("]:", 1)
             host = host.lstrip("[")
-            port = int(port)
         else:
             host, port = hostport.rsplit(":", 1)
-            port = int(port)
+        port = int(port)
         params = parse_qs(query)
         return {
-            "uuid": uuid,
-            "host": host,
-            "port": port,
+            "uuid": uuid, "host": host, "port": port,
             "params": {k: v[0] for k, v in params.items()},
             "name": name,
+            "raw": link + (("#" + name) if name else ""),
         }
-    except Exception as e:
-        print(f"[!] Parse error: {link[:60]}... - {e}")
+    except Exception:
         return None
 
+
+# ---------- Проверки ----------
 async def tcp_ok(host, port, timeout):
     try:
         r, w = await asyncio.wait_for(asyncio.open_connection(host, port), timeout)
@@ -59,6 +96,7 @@ async def tcp_ok(host, port, timeout):
         return True
     except Exception:
         return False
+
 
 async def tls_ok(host, port, timeout, sni=None):
     ctx = ssl.create_default_context()
@@ -78,6 +116,7 @@ async def tls_ok(host, port, timeout, sni=None):
     except Exception:
         return False
 
+
 async def probe(cfg):
     host, port = cfg["host"], cfg["port"]
     timeout = CFG["check"]["timeout"]
@@ -92,6 +131,7 @@ async def probe(cfg):
             return False, 0, False
         return True, ping, True
     return True, ping, False
+
 
 async def geo_lookup(session, host):
     if not hasattr(geo_lookup, "_cache"):
@@ -117,38 +157,50 @@ async def geo_lookup(session, host):
     geo_lookup._cache[host] = None
     return None
 
+
+# ---------- Основной проход ----------
 async def main():
-    raw_lines = [
-        l.strip() for l in Path(CFG["input"]).read_text(encoding="utf-8").splitlines()
-        if l.strip() and not l.startswith("#")
-    ]
-    print(f"[+] Loaded lines: {len(raw_lines)}")
-
-    configs = []
-    for line in raw_lines:
-        cfg = parse_vless(line)
-        if cfg:
-            configs.append(cfg)
-    print(f"[+] Valid VLESS configs: {len(configs)}")
-
-    seen = set()
-    unique = []
-    for c in configs:
-        key = f"{c['host']}:{c['port']}"
-        if key not in seen:
-            seen.add(key)
-            unique.append(c)
-    print(f"[+] Unique servers: {len(unique)}")
-
-    sem = asyncio.Semaphore(CFG["check"]["concurrency"])
-    attempts = CFG["check"]["attempts"]
-    min_ratio = CFG["check"]["min_alive_ratio"]
-    max_ping = CFG["check"]["max_ping"]
-
     async with aiohttp.ClientSession() as session:
+        print("[+] Скачиваю конфиги из источников...")
+        fresh = await gather_servers(session)
+        print(f"[+] Из источников: {len(fresh)} ссылок")
+
+        # Плюс локальный servers.txt (если есть)
+        local = []
+        if Path(CFG["input"]).exists():
+            local = [
+                l.strip() for l in Path(CFG["input"]).read_text(encoding="utf-8").splitlines()
+                if l.strip().startswith("vless://")
+            ]
+            print(f"[+] Из servers.txt: {len(local)} ссылок")
+
+        all_links = list(set(fresh + local))
+        print(f"[+] Всего уникальных ссылок: {len(all_links)}")
+
+        # Парсинг
+        configs = [parse_vless(l) for l in all_links]
+        configs = [c for c in configs if c]
+
+        # Дедупликация по host:port
+        seen = set()
+        unique = []
+        for c in configs:
+            key = f"{c['host']}:{c['port']}"
+            if key not in seen:
+                seen.add(key)
+                unique.append(c)
+        print(f"[+] Уникальных серверов: {len(unique)}")
+
+        sem = asyncio.Semaphore(CFG["check"]["concurrency"])
+        attempts = CFG["check"]["attempts"]
+        min_ratio = CFG["check"]["min_alive_ratio"]
+        max_ping = CFG["check"]["max_ping"]
+
         async def worker(cfg):
             async with sem:
-                results, pings, tls_flags = [], [], []
+                results = []
+                pings = []
+                tls_flags = []
                 for _ in range(attempts):
                     alive, ping, tls = await probe(cfg)
                     results.append(alive)
@@ -175,7 +227,7 @@ async def main():
                         return None
                 return {"cfg": cfg, "ping": avg_ping, "country": country, "alive_ratio": ratio}
 
-        print(f"[+] Checking {len(unique)} servers (x{attempts} attempts, timeout {CFG['check']['timeout']}s)...")
+        print(f"[+] Проверяю {len(unique)} серверов (x{attempts} попыток)...")
         t0 = time.time()
         raw = await asyncio.gather(*(worker(c) for c in unique))
         elapsed = time.time() - t0
@@ -183,16 +235,15 @@ async def main():
     good = [r for r in raw if r]
     good.sort(key=lambda r: r["ping"])
 
-    print(f"\n[+] Done in {elapsed:.1f}s")
-    print(f"[+] Alive after filter: {len(good)} of {len(unique)}")
+    print(f"\n[✓] Готово за {elapsed:.1f}с")
+    print(f"[✓] Живых после фильтра: {len(good)} из {len(unique)}")
 
     brand = CFG["brand"]["name"]
     final_links = []
     for r in good:
         cfg = r["cfg"]
         flag = FLAGS.get(r["country"] or "", "")
-        country_name = r["country"] or "??"
-        new_name = f"{flag} {country_name} | {r['ping']}ms | @{brand}"
+        new_name = f"{flag} {r['country'] or '??'} | {r['ping']}ms | @{brand}"
         params = "&".join(f"{k}={v}" for k, v in cfg["params"].items())
         new_link = f"vless://{cfg['uuid']}@{cfg['host']}:{cfg['port']}?{params}#{new_name}"
         final_links.append(new_link)
@@ -203,19 +254,21 @@ async def main():
     (OUT / "sub_plain.txt").write_text(plain, encoding="utf-8")
 
     lines = [
-        f"Total: {len(unique)} | Alive: {len(good)} | Time: {elapsed:.1f}s",
+        f"Всего: {len(unique)} | Живых: {len(good)} | Время: {elapsed:.1f}с",
         "",
-        f"{'SERVER':<35} {'GEO':<5} {'PING':<6} {'RATIO'}",
+        f"{'СЕРВЕР':<35} {'ГЕО':<5} {'ПИНГ':<6} {'RATIO'}",
         "-" * 60,
     ]
     for r in good:
         cfg = r["cfg"]
-        lines.append(f"{cfg['host']+':'+str(cfg['port']):<35} {r['country'] or '??':<5} {r['ping']:<6} {r['alive_ratio']:.2f}")
+        lines.append(
+            f"{cfg['host']+':'+str(cfg['port']):<35} "
+            f"{r['country'] or '??':<5} {r['ping']:<6} {r['alive_ratio']:.2f}"
+        )
     (OUT / "report.txt").write_text("\n".join(lines), encoding="utf-8")
 
-    print(f"[+] sub_base64.txt - subscription for phone")
-    print(f"[+] sub_plain.txt - readable list")
-    print(f"[+] report.txt - report")
+    print(f"[✓] sub_base64.txt, sub_plain.txt, report.txt")
+
 
 if __name__ == "__main__":
     asyncio.run(main())
