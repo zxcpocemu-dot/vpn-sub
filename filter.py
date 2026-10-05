@@ -14,17 +14,10 @@ OUT = Path(CFG["output_dir"])
 OUT.mkdir(exist_ok=True)
 
 # ============================================================
-# ИСТОЧНИКИ — публичные репозитории, обновляются автоматически
+# ЕДИНСТВЕННЫЙ ИСТОЧНИК — ссылка пользователя
 # ============================================================
 SOURCES = [
-    "https://raw.githubusercontent.com/MatinGhanbari/v2ray-configs/main/subscriptions/filtered/subs/vless.txt",
-    "https://raw.githubusercontent.com/kort0881/vpn-vless-configs-russia/main/githubmirror/clean/vless.txt",
-    "https://raw.githubusercontent.com/srgvsky/goida/main/sub/vless.txt",
-    "https://raw.githubusercontent.com/mohammadaz2/v2rayConfigsForYou/main/sub/vless.txt",
-    "https://raw.githubusercontent.com/hamedcode/port-based-v2ray-configs/main/sub/vless.txt",
-    "https://raw.githubusercontent.com/histeenn/VLESS-PO-GRIBI/main/deploy/subscriptions/1.txt",
-    "https://raw.githubusercontent.com/histeenn/VLESS-PO-GRIBI/main/deploy/subscriptions/2.txt",
-    "https://raw.githubusercontent.com/histeenn/VLESS-PO-GRIBI/main/deploy/subscriptions/3.txt",
+    "https://raw.githubusercontent.com/solovyov-jenya2004/all_subs/refs/heads/main/final_sorted",
 ]
 
 FLAGS = {
@@ -35,12 +28,12 @@ FLAGS = {
 }
 
 
-# ---------- Скачивание из источников ----------
 async def gather_servers(session):
+    """Скачивает VLESS-ссылки из источника."""
     all_links = set()
     for url in SOURCES:
         try:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as r:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as r:
                 text = await r.text()
                 count = 0
                 for line in text.splitlines():
@@ -48,13 +41,12 @@ async def gather_servers(session):
                     if line.startswith("vless://"):
                         all_links.add(line)
                         count += 1
-                print(f"[+] {url.split('/')[4]}: +{count}")
+                print(f"[+] Источник: +{count} ссылок")
         except Exception as e:
             print(f"[!] Не удалось скачать {url}: {e}")
     return list(all_links)
 
 
-# ---------- Парсинг VLESS ----------
 def parse_vless(link):
     try:
         link = link.strip()
@@ -84,7 +76,6 @@ def parse_vless(link):
         return None
 
 
-# ---------- Проверки ----------
 async def tcp_ok(host, port, timeout):
     try:
         r, w = await asyncio.wait_for(asyncio.open_connection(host, port), timeout)
@@ -158,12 +149,11 @@ async def geo_lookup(session, host):
     return None
 
 
-# ---------- Основной проход ----------
 async def main():
     async with aiohttp.ClientSession() as session:
-        print("[+] Скачиваю конфиги из источников...")
+        print("[+] Скачиваю конфиги из источника...")
         fresh = await gather_servers(session)
-        print(f"[+] Из источников: {len(fresh)} ссылок")
+        print(f"[+] Из источника: {len(fresh)} ссылок")
 
         # Плюс локальный servers.txt (если есть)
         local = []
@@ -177,11 +167,9 @@ async def main():
         all_links = list(set(fresh + local))
         print(f"[+] Всего уникальных ссылок: {len(all_links)}")
 
-        # Парсинг
         configs = [parse_vless(l) for l in all_links]
         configs = [c for c in configs if c]
 
-        # Дедупликация по host:port
         seen = set()
         unique = []
         for c in configs:
