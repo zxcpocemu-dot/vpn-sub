@@ -3,19 +3,19 @@ output_dir: out
 
 check:
   timeout: 3.0
-  concurrency: 50
+  concurrency: 100
   attempts: 3
   min_alive_ratio: 0.66
   require_tls: true
-  max_ping: 200
+  max_ping: 300
 
 geo:
-  enabled: true
+  enabled: false
   mode: whitelist
-  countries: [DE, NL, FI, SE, FR, GB, PL, CZ, AT, CH, RO, LT, LV, EE, IT, ES, PT, BE, DK, NO, IE]
+  countries: []
 
 brand:
-  name: "vurdolak_67"
+  name: ""
   flag: true
 
 output:
